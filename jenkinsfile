@@ -1,0 +1,89 @@
+pipeline {
+    agent any
+
+    environment {
+        REMOTE_USER = "ubuntu"
+        REMOTE_HOST = "56.155.87.215"
+        REMOTE_DIR  = "/home/ubuntu/jarvis"
+        CRED_ID     = "jarvis-key"  // Your Jenkins SSH credential ID
+        SERVICE_NAME = "jarvis"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Omkarpatange010/Jarvis-Desktop-Voice-Assistant-Application.git'
+            }
+        }
+
+        stage('Package & Transfer') {
+            steps {
+                sshagent([CRED_ID]) {
+                    sh '''
+                    echo "Creating remote directory..."
+                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}"
+
+                    echo "Copying files to remote server..."
+                    scp -o StrictHostKeyChecking=no -r * ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/
+                    '''
+                }
+            }
+        }
+
+        stage('Remote: Setup & Restart') {
+            steps {
+                sshagent([CRED_ID]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
+                        cd ${REMOTE_DIR} &&
+                        
+                        # Install system packages
+                        sudo apt update -y &&
+                        sudo apt install -y python3-venv python3-pip &&
+                        
+                        # Setup Python virtual environment
+                        if [ ! -d "venv" ]; then
+                            python3 -m venv venv
+                        fi
+                        source venv/bin/activate &&
+                        pip install --upgrade pip &&
+                        pip install -r requirements.txt &&
+                        
+                        # Create systemd service if it does not exist
+                        if [ ! -f /etc/systemd/system/${SERVICE_NAME}.service ]; then
+                            echo "[Unit]
+Description=Jarvis Desktop Voice Assistant
+After=network.target
+
+[Service]
+User=${REMOTE_USER}
+WorkingDirectory=${REMOTE_DIR}
+ExecStart=${REMOTE_DIR}/venv/bin/python ${REMOTE_DIR}/jarvis.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target" | sudo tee /etc/systemd/system/${SERVICE_NAME}.service
+                        fi
+                        
+                        # Reload systemd and restart service
+                        sudo systemctl daemon-reload &&
+                        sudo systemctl enable ${SERVICE_NAME} &&
+                        sudo systemctl restart ${SERVICE_NAME} &&
+                        sudo systemctl status ${SERVICE_NAME} --no-pager
+                    '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment completed successfully!'
+        }
+        failure {
+            echo 'Deployment failed!'
+        }
+    }
+}
